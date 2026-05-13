@@ -99,11 +99,10 @@ Dataware/
 ## Membres de l’équipe
 
 | Rôle | Nom |
-|------|-----|
-| Chef de projet BI | Étudiant 1 |
-| Ingénieur données | Étudiant 2 |
-| Développeur SSIS / SQL | Étudiant 3 |
-| Analyste Power BI | Étudiant 4 |
+Salah Siraj
+Youssef Guedira
+Ayman Majjouj
+Ilyas Samir
 
 ## Licence
 
