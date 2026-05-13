@@ -1,0 +1,21 @@
+/* =============================================================================
+   Power BI semantic model — FactSales grain measures (Import or DirectQuery)
+   Tables: FactSales, DimDate, DimProduct, DimCustomer, DimTerritory, DimSalesPerson
+   ============================================================================= */
+
+Total Revenue = SUM(FactSales[LineTotal])
+Total Cost = SUMX(FactSales, FactSales[StandardCost] * FactSales[OrderQuantity])
+Gross Margin = [Total Revenue] - [Total Cost]
+Gross Margin % = DIVIDE([Gross Margin], [Total Revenue], 0)
+Order Count = DISTINCTCOUNT(FactSales[SalesOrderID])
+Avg Order Value = DIVIDE([Total Revenue], [Order Count], 0)
+YTD Revenue = TOTALYTD([Total Revenue], DimDate[FullDate])
+PYTD Revenue = CALCULATE([Total Revenue], SAMEPERIODLASTYEAR(DimDate[Date]))
+Revenue Growth % = DIVIDE([Total Revenue] - [PYTD Revenue], [PYTD Revenue], 0)
+Customer Count = DISTINCTCOUNT(FactSales[CustomerKey])
+Revenue per Customer = DIVIDE([Total Revenue], [Customer Count], 0)
+Top Product Flag = IF(RANKX(ALL(DimProduct[ProductName]), [Total Revenue], , DESC) <= 10, "Top 10", "Other")
+
+Units Sold = SUM ( FactSales[OrderQuantity] )
+
+Margin per Unit = DIVIDE ( [Gross Margin], [Units Sold], 0 )

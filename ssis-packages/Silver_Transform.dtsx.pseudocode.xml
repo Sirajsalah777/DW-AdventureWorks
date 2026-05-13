@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+================================================================================
+DELIVERABLE 2 — Package 2: Silver_Transform.dtsx
+================================================================================
+-->
+<SSISPackage Name="Silver_Transform">
+  <ConnectionManagers>
+    <ConnectionManager Name="DestDW" Type="OLEDB" InitialCatalog="DW_AdventureWorks" />
+    <ConnectionManager Name="SMTP_CM" Type="SMTP" SmtpServer="smtp.contoso.com" />
+  </ConnectionManagers>
+
+  <Variables>
+    <Variable Name="User::v_BatchID" DataType="String" />
+    <Variable Name="User::v_BronzeRows" DataType="Int32" />
+    <Variable Name="User::v_SilverRows" DataType="Int32" />
+    <Variable Name="User::v_DQ_Status" DataType="String" />
+  </Variables>
+
+  <ControlFlow>
+    <ExecuteSQLTask Name="EST_LoadSilver" Connection="DestDW">
+      <SqlStatement>EXEC [dbo].[sp_load_silver];</SqlStatement>
+    </ExecuteSQLTask>
+
+    <ExecuteSQLTask Name="EST_CountBronze" Connection="DestDW" PrecedenceConstraint="Success EST_LoadSilver" ResultSet="SingleRow">
+      <SqlStatement>
+        SELECT SUM(rc) AS BronzeRows FROM (
+          SELECT COUNT_BIG(*) AS rc FROM [bronze].[SalesOrderDetail] WITH (NOLOCK)
+          UNION ALL SELECT COUNT_BIG(*) FROM [bronze].[Customer] WITH (NOLOCK)
+        ) x;
+      </SqlStatement>
+      <ResultBindings>
+        <ResultBinding ResultName="0" VariableName="User::v_BronzeRows" />
+      </ResultBindings>
+    </ExecuteSQLTask>
+
+    <ExecuteSQLTask Name="EST_CountSilver" Connection="DestDW" PrecedenceConstraint="Success EST_CountBronze" ResultSet="SingleRow">
+      <SqlStatement>
+        SELECT COUNT_BIG(*) AS SilverRows FROM [silver].[SalesOrder] WITH (NOLOCK);
+      </SqlStatement>
+      <ResultBindings>
+        <ResultBinding ResultName="0" VariableName="User::v_SilverRows" />
+      </ResultBindings>
+    </ExecuteSQLTask>
+
+    <ScriptTask Name="SCR_DQ_Check" PrecedenceConstraint="Success EST_CountSilver">
+      <ReadOnlyVariables>User::v_BronzeRows,User::v_SilverRows</ReadOnlyVariables>
+      <ReadWriteVariables>User::v_DQ_Status</ReadWriteVariables>
+      <Code><![CDATA[
+        int b = (int)Dts.Variables["User::v_BronzeRows"].Value;
+        int s = (int)Dts.Variables["User::v_SilverRows"].Value;
+        Dts.Variables["User::v_DQ_Status"].Value = (s > 0 && s <= b * 2) ? "PASS" : "INVESTIGATE";
+        Dts.TaskResult = (int)ScriptResults.Success;
+      ]]></Code>
+    </ScriptTask>
+
+    <SendMailTask Name="SMT_NotifyComplete" PrecedenceConstraint="Success SCR_DQ_Check">
+      <From>dw-etl@contoso.com</From>
+      <To>bi-team@contoso.com</To>
+      <Subject>Silver_Transform completed</Subject>
+      <MessageSourceType>Variable</MessageSourceType>
+      <MessageSource>User::v_DQ_Status</MessageSource>
+    </SendMailTask>
+  </ControlFlow>
+</SSISPackage>

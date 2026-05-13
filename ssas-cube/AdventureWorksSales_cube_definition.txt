@@ -1,0 +1,196 @@
+================================================================================
+DELIVERABLE 3 — SSAS Multidimensional Model: AdventureWorksSales
+Target: SQL Server Analysis Services (SSAS) Multidimensional / Tabular equivalent
+Data Source: SQL Server relational DW [DW_AdventureWorks], schema [gold]
+================================================================================
+
+DATA SOURCE
+-----------
+Name: DW_AdventureWorks_OLEDB
+Connection String: Provider=SQLNCLI11;Data Source=.;Integrated Security=SSPI;Initial Catalog=DW_AdventureWorks;
+Impersonation: Service Account (or domain BI reader)
+
+DATA SOURCE VIEW (DSV)
+----------------------
+Name: DSV_GoldSales
+Logical relationships (foreign keys as modeled in SQL):
+  FactSales.OrderDateKey -> DimDate.DateKey
+  FactSales.CustomerKey -> DimCustomer.CustomerKey
+  FactSales.ProductKey   -> DimProduct.ProductKey
+  FactSales.TerritoryKey -> DimTerritory.TerritoryKey
+  FactSales.SalesPersonKey -> DimSalesPerson.SalesPersonKey
+
+Included tables (all from [gold]):
+  gold.FactSales
+  gold.DimDate
+  gold.DimCustomer
+  gold.DimProduct
+  gold.DimTerritory
+  gold.DimSalesPerson
+
+CUBE
+----
+Name: AdventureWorksSales
+Default Measure: [Measures].[Total Revenue]
+Storage Mode: MOLAP (or ROLAP for near-real-time; MOLAP recommended for stable warehouse)
+
+MEASURE GROUP: Sales Facts
+Binding: gold.FactSales (Type: Fact)
+Grain: One row per (SalesOrderID, SalesOrderDetailID) surrogate FactSalesKey ignored for distinct count patterns.
+
+MEASURES (DAX-style expression shown for Tabular; MDX aggregate for Multidimensional)
+------------------------------------------------------------------------------------
+[Measures].[Total Revenue]
+  Expression: SUM(FactSales[LineTotal])
+  FormatString: Currency
+  DisplayFolder: Sales
+
+[Measures].[Total Cost]
+  Expression: SUMX(FactSales, FactSales[StandardCost] * FactSales[OrderQuantity])
+  MDX: SUM(Measures.[Standard Cost Extended])
+  Helper measure [Standard Cost Extended] = SUM( [FactSales].[Standard Cost] * [FactSales].[Order Quantity] ) via calculated column in DSV: StdCostExt = StandardCost * OrderQuantity then SUM.
+
+[Measures].[Gross Margin]
+  Expression: SUM(FactSales[GrossMargin])
+  FormatString: Currency
+
+[Measures].[Gross Margin %]
+  Expression: IIF([Measures].[Total Revenue]=0, BLANK(), [Measures].[Gross Margin] / [Measures].[Total Revenue])
+  FormatString: Percent
+
+[Measures].[Order Count]
+  Expression: DISTINCTCOUNT(FactSales[SalesOrderID])
+  MDX: DistinctCount([FactSales].[Sales Order ID])
+
+[Measures].[Units Sold]
+  Expression: SUM(FactSales[OrderQuantity])
+  FormatString: #,0
+
+[Measures].[Average Order Value]
+  Expression: DIVIDE([Measures].[Total Revenue], [Measures].[Order Count])
+  FormatString: Currency
+
+[Measures].[YTD Revenue]
+  MDX: SUM(YTD([DimDate].[Calendar].[Calendar Year].CURRENTMEMBER), [Measures].[Total Revenue])
+  Tabular: TOTALYTD([Total Revenue], DimDate[FullDate])
+
+DIMENSION: DimDate
+------------------
+Type: Time
+Key Attribute: DateKey (KeyColumns: DateKey, NameColumn: FullDate)
+Hierarchy: Calendar Y-Q-M-D
+  Level Year:     CalendarYear
+  Level Quarter:  CalendarYear + CalendarQuarter (composite key recommended)
+  Level Month:    CalendarYear + CalendarMonth
+  Level Date:     DateKey
+Attribute Relationships: Date -> Month -> Quarter -> Year
+
+DIMENSION: DimProduct
+---------------------
+Key: ProductKey
+Hierarchy: Product Category
+  Category: CategoryName
+  Subcategory: SubcategoryName
+  Product: ProductName
+Attribute Relationships: ProductName -> SubcategoryName -> CategoryName
+
+DIMENSION: DimCustomer
+-----------------------
+Key: CustomerKey
+Hierarchy: Geography / Customer
+  Country: CountryName
+  Region:  TerritoryName (using sales territory as commercial region)
+  Customer: CustomerName
+WType: SCD Type 2 (historical attributes enabled on CustomerName, CountryName; flexible aggregations OFF for non-key attributes)
+
+DIMENSION: DimTerritory
+-----------------------
+Key: TerritoryKey
+Hierarchy: Commercial hierarchy
+  Level Group: RegionGroup
+  Level Country: CountryName
+  Level Territory: TerritoryName
+
+DIMENSION: DimSalesPerson
+-------------------------
+Key: SalesPersonKey
+Attributes: BusinessEntityID (member key alternate), SalesQuota, HireDate, TerritoryName (all attribute relationships flat to key)
+
+KPI: Revenue Target
+-------------------
+Goal: [Measures].[Sales Quota Total]  where [Sales Quota Total] = SUM(DimSalesPerson.CurrentMember, DimSalesPerson.SalesQuota) aggregated at salesperson grain
+Actual: [Measures].[Total Revenue]
+Status MDX sample:
+  Case
+    When KpiValue("Revenue Target") >= KpiGoal("Revenue Target") * 1.0 Then 1
+    When KpiValue("Revenue Target") >= KpiGoal("Revenue Target") * 0.9 Then 0
+    Else -1
+  End
+Trend: Same period prior year comparison using ParallelPeriod on DimDate
+
+KPI: Gross Margin KPI
+---------------------
+Goal: 0.30 (30% margin ratio)
+Value: [Measures].[Gross Margin] / [Measures].[Total Revenue]
+Status:
+  Case When [Measures].[Gross Margin %] >= 0.30 Then 1
+       When [Measures].[Gross Margin %] >= 0.20 Then 0
+       Else -1 End
+(Green / Yellow / Red traffic light semantics)
+
+MDX CALCULATED MEMBERS & SAMPLE QUERIES
+---------------------------------------
+
+-- 1) Revenue current calendar year vs previous year (MDX)
+WITH MEMBER [Measures].[CY Revenue] AS
+  ( [DimDate].[Calendar].[Calendar Year].&[2014], [Measures].[Total Revenue] )
+MEMBER [Measures].[PY Revenue] AS
+  ( ParallelPeriod( [DimDate].[Calendar].[Calendar Year], 1, [DimDate].[Calendar].[Calendar Year].&[2014] ), [Measures].[Total Revenue] )
+SELECT { [Measures].[CY Revenue], [Measures].[PY Revenue] } ON 0
+FROM [AdventureWorksSales];
+
+-- 2) Top 5 products by revenue for current quarter (MDX)
+SELECT [Measures].[Total Revenue] ON 0,
+  TOPCOUNT(
+    [DimProduct].[Product].[Product].MEMBERS,
+    5,
+    [Measures].[Total Revenue]
+  ) ON 1
+FROM [AdventureWorksSales]
+WHERE ( [DimDate].[Calendar].[Calendar Quarter].[Q2 CY 2013] );
+
+-- 3) Revenue by territory with percentage of total (MDX)
+WITH MEMBER [Measures].[Rev Pct Of Parent] AS
+  [Measures].[Total Revenue] /
+  ( ANCESTOR( [DimTerritory].[Commercial].CURRENTMEMBER, [DimTerritory].[Commercial].[Region Group] ), [Measures].[Total Revenue] )
+SELECT { [Measures].[Total Revenue], [Measures].[Rev Pct Of Parent] } ON 0,
+  [DimTerritory].[Territory Name].MEMBERS ON 1
+FROM [AdventureWorksSales];
+
+-- 4) Running total of revenue by month (MDX)
+WITH MEMBER [Measures].[Revenue YTD Month] AS
+  SUM( YTD( [DimDate].[Calendar].CURRENTMEMBER ), [Measures].[Total Revenue] )
+SELECT { [Measures].[Total Revenue], [Measures].[Revenue YTD Month] } ON 0,
+  [DimDate].[Calendar].[Month].MEMBERS ON 1
+FROM [AdventureWorksSales]
+WHERE [DimDate].[Calendar].[Calendar Year].&[2013];
+
+-- 5) Customer count with revenue greater than 10000 (MDX)
+WITH MEMBER [Measures].[Customers Over 10k] AS
+  COUNT(
+    FILTER(
+      [DimCustomer].[Customer Name].MEMBERS AS c,
+      ( c, [Measures].[Total Revenue] ) > 10000
+    )
+  )
+SELECT [Measures].[Customers Over 10k] ON 0
+FROM [AdventureWorksSales];
+
+PARTITIONS & PROCESSING
+-----------------------
+Partition FactSales by CalendarYear on DimDate for faster processing (e.g. one partition per year 2011–2014).
+Process strategy: Dimension ProcessUpdate weekly; Measure group ProcessFull after nightly ETL.
+
+SECURITY
+--------
+Role: SalesRegionReaders — MDX expression on DimTerritory limiting members by USERNAME() mapped to allowed regions.

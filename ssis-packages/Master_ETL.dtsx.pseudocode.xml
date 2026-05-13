@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+================================================================================
+DELIVERABLE 2 — Package 4: Master_ETL.dtsx (orchestration)
+================================================================================
+-->
+<SSISPackage Name="Master_ETL">
+  <ConnectionManagers>
+    <ConnectionManager Name="DestDW" Type="OLEDB" InitialCatalog="DW_AdventureWorks" />
+    <ConnectionManager Name="CM_ProjectReference" Type="ProjectReference" ReferencedProject="AdventureWorks_DW_ETL" />
+  </ConnectionManagers>
+
+  <Variables>
+    <Variable Name="User::v_MasterBatch" DataType="String" />
+  </Variables>
+
+  <ControlFlow>
+    <ExecutePackageTask Name="EPT_Bronze_Load" PackageName="Bronze_Load.dtsx" ProjectReference="CM_ProjectReference">
+      <ParameterBindings PassParentBatchID="true" />
+    </ExecutePackageTask>
+
+    <ExecutePackageTask Name="EPT_Silver_Transform" PackageName="Silver_Transform.dtsx" ProjectReference="CM_ProjectReference">
+      <PrecedenceConstraint InputTask="EPT_Bronze_Load" EvaluationOp="Constraint" Value="Success" />
+    </ExecutePackageTask>
+
+    <ExecutePackageTask Name="EPT_Gold_Load" PackageName="Gold_Load.dtsx" ProjectReference="CM_ProjectReference">
+      <PrecedenceConstraint InputTask="EPT_Silver_Transform" EvaluationOp="Constraint" Value="Success" />
+    </ExecutePackageTask>
+  </ControlFlow>
+
+  <EventHandlers EventHandlerType="OnError" Propagate="true">
+    <ScriptTask Name="SCR_GlobalError">
+      <ReadOnlyVariables>System::ErrorDescription,System::SourceName</ReadOnlyVariables>
+      <Code><![CDATA[
+        // Log to SSIS catalog or custom table; optionally raise SQL Agent alert
+        bool fireAgain;
+        Dts.Events.FireError(0, "Master_ETL", Dts.Variables["System::ErrorDescription"].ToString(), string.Empty, 0, out fireAgain);
+        Dts.TaskResult = (int)ScriptResults.Failure;
+      ]]></Code>
+    </ScriptTask>
+  </EventHandlers>
+</SSISPackage>

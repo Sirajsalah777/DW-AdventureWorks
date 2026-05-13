@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+================================================================================
+DELIVERABLE 2 — Package 1: Bronze_Load.dtsx (implementation pseudocode)
+Visual Studio: SQL Server Data Tools (SSDT) / Integration Services Project
+================================================================================
+-->
+<SSISPackage Name="Bronze_Load" ProtectionLevel="EncryptSensitiveWithUserKey">
+  <Description>Extract full snapshot from AdventureWorks2022 into DW bronze layer via dbo.sp_load_bronze.</Description>
+
+  <ConnectionManagers>
+    <ConnectionManager Name="SourceAW" Type="OLEDB" Description="OLTP source">
+      <Properties>
+        <Property Name="ServerName">YourSqlServerInstance</Property>
+        <Property Name="InitialCatalog">AdventureWorks2022</Property>
+        <Property Name="IntegratedSecurity">SSPI</Property>
+      </Properties>
+    </ConnectionManager>
+    <ConnectionManager Name="DestDW" Type="OLEDB" Description="Data warehouse target">
+      <Properties>
+        <Property Name="ServerName">YourSqlServerInstance</Property>
+        <Property Name="InitialCatalog">DW_AdventureWorks</Property>
+        <Property Name="IntegratedSecurity">SSPI</Property>
+      </Properties>
+    </ConnectionManager>
+  </ConnectionManagers>
+
+  <Variables>
+    <Variable Name="User::v_LoadDate" DataType="DateTime" Namespace="User" EvaluateAsExpression="false" />
+    <Variable Name="User::v_BatchID" DataType="String" Namespace="User" EvaluateAsExpression="false" />
+  </Variables>
+
+  <PreExecuteEvent>
+    <ExecuteSQLTask Connection="DestDW" SqlStatementSource="EXEC ?" BypassPrepare="false">
+      <ParameterBinding VariableName="User::v_BatchID" ParameterName="0" DataType="GUID" Direction="Output" />
+      <!-- Alternative: use Script Task System.Guid.NewGuid() assigned to v_BatchID -->
+    </ExecuteSQLTask>
+  </PreExecuteEvent>
+
+  <ControlFlow>
+    <SequenceContainer Name="SEQ_Bronze_Load">
+      <ExecuteSQLTask Name="EST_StartLog" Connection="DestDW" ResultSet="None">
+        <SqlStatement>
+          INSERT INTO [bronze].[etl_log] ([batch_id],[package_name],[start_time],[status])
+          VALUES (CAST(? AS uniqueidentifier), N'Bronze_Load', SYSUTCDATETIME(), N'Running');
+        </SqlStatement>
+        <ParameterBindings>
+          <ParameterBinding VariableName="User::v_BatchID" DIRECTION="INPUT" DataType="GUID" ParameterName="0" />
+        </ParameterBindings>
+      </ExecuteSQLTask>
+
+      <ScriptTask Name="SCR_SetLoadDate" PrecedenceConstraint="Success EST_StartLog">
+        <ReadOnlyVariables />
+        <ReadWriteVariables>User::v_LoadDate</ReadWriteVariables>
+        <Code><![CDATA[
+          Dts.Variables["User::v_LoadDate"].Value = System.DateTime.UtcNow;
+          Dts.TaskResult = (int)ScriptResults.Success;
+        ]]></Code>
+      </ScriptTask>
+
+      <ExecuteSQLTask Name="EST_LoadBronze" Connection="DestDW" PrecedenceConstraint="Success SCR_SetLoadDate">
+        <SqlStatement>EXEC [dbo].[sp_load_bronze] @SourceDatabase = N'AdventureWorks2022';</SqlStatement>
+      </ExecuteSQLTask>
+
+      <ExecuteSQLTask Name="EST_CompleteLog" Connection="DestDW" PrecedenceConstraint="Success EST_LoadBronze">
+        <SqlStatement>
+          UPDATE l
+          SET [end_time] = SYSUTCDATETIME(),
+              [rows_processed] = (SELECT SUM(p.rows) FROM sys.partitions p
+                  INNER JOIN sys.tables t ON p.object_id = t.object_id
+                  INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                  WHERE s.name = N'bronze' AND p.index_id IN (0,1)),
+              [status] = N'Success',
+              [error_message] = NULL
+          FROM [bronze].[etl_log] AS l
+          WHERE l.[batch_id] = CAST(? AS uniqueidentifier) AND l.[package_name] = N'Bronze_Load';
+        </SqlStatement>
+        <ParameterBindings>
+          <ParameterBinding VariableName="User::v_BatchID" DIRECTION="INPUT" DataType="GUID" ParameterName="0" />
+        </ParameterBindings>
+      </ExecuteSQLTask>
+    </SequenceContainer>
+  </ControlFlow>
+
+  <EventHandlers EventHandlerType="OnError" Propagate="false">
+    <ExecuteSQLTask Name="EST_ErrorLog" Connection="DestDW">
+      <SqlStatement>
+        UPDATE [bronze].[etl_log]
+        SET [end_time] = SYSUTCDATETIME(),
+            [status] = N'Failed',
+            [error_message] = ?
+        WHERE [batch_id] = CAST(? AS uniqueidentifier) AND [package_name] = N'Bronze_Load';
+      </SqlStatement>
+      <ParameterBindings>
+        <ParameterBinding VariableName="System::ErrorDescription" DataType="WSTR" Direction="INPUT" ParameterName="0" />
+        <ParameterBinding VariableName="User::v_BatchID" DataType="GUID" Direction="INPUT" ParameterName="1" />
+      </ParameterBindings>
+    </ExecuteSQLTask>
+  </EventHandlers>
+</SSISPackage>

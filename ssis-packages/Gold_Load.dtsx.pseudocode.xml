@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+================================================================================
+DELIVERABLE 2 — Package 3: Gold_Load.dtsx
+================================================================================
+-->
+<SSISPackage Name="Gold_Load">
+  <ConnectionManagers>
+    <ConnectionManager Name="DestDW" Type="OLEDB" InitialCatalog="DW_AdventureWorks" />
+  </ConnectionManagers>
+
+  <Variables>
+    <Variable Name="User::v_StartUtc" DataType="DateTime" />
+    <Variable Name="User::v_FactRows" DataType="Int64" />
+    <Variable Name="User::v_RI_Violations" DataType="Int32" />
+  </Variables>
+
+  <ControlFlow>
+    <ScriptTask Name="SCR_StartTimer">
+      <ReadWriteVariables>User::v_StartUtc</ReadWriteVariables>
+      <Code><![CDATA[
+        Dts.Variables["User::v_StartUtc"].Value = System.DateTime.UtcNow;
+        Dts.TaskResult = (int)ScriptResults.Success;
+      ]]></Code>
+    </ScriptTask>
+
+    <ExecuteSQLTask Name="EST_LoadGold" Connection="DestDW" PrecedenceConstraint="Success SCR_StartTimer">
+      <SqlStatement>EXEC [dbo].[sp_load_gold] @SourceDatabase = N'AdventureWorks2022';</SqlStatement>
+    </ExecuteSQLTask>
+
+    <ExecuteSQLTask Name="EST_ValidateRI" Connection="DestDW" PrecedenceConstraint="Success EST_LoadGold" ResultSet="SingleRow">
+      <SqlStatement>
+        SELECT COUNT(*) AS Violations
+        FROM [gold].[FactSales] AS f
+        WHERE NOT EXISTS (SELECT 1 FROM [gold].[DimDate] d WHERE d.DateKey = f.OrderDateKey)
+           OR NOT EXISTS (SELECT 1 FROM [gold].[DimCustomer] c WHERE c.CustomerKey = f.CustomerKey)
+           OR NOT EXISTS (SELECT 1 FROM [gold].[DimProduct] p WHERE p.ProductKey = f.ProductKey AND p.IsCurrent = 1)
+           OR NOT EXISTS (SELECT 1 FROM [gold].[DimTerritory] t WHERE t.TerritoryKey = f.TerritoryKey)
+           OR NOT EXISTS (SELECT 1 FROM [gold].[DimSalesPerson] s WHERE s.SalesPersonKey = f.SalesPersonKey);
+      </SqlStatement>
+      <ResultBindings>
+        <ResultBinding ResultName="0" VariableName="User::v_RI_Violations" />
+      </ResultBindings>
+    </ExecuteSQLTask>
+
+    <ExecuteSQLTask Name="EST_AuditGoldLoad" Connection="DestDW" PrecedenceConstraint="Success EST_ValidateRI">
+      <SqlStatement>
+        IF OBJECT_ID(N'dbo.etl_audit_gold', N'U') IS NULL
+        BEGIN
+          CREATE TABLE [dbo].[etl_audit_gold](
+            [audit_id] BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+            [run_time] DATETIME2(3) NOT NULL,
+            [duration_ms] BIGINT NOT NULL,
+            [fact_rows] BIGINT NOT NULL,
+            [ri_violations] INT NOT NULL
+          );
+        END
+        INSERT INTO [dbo].[etl_audit_gold] ([run_time],[duration_ms],[fact_rows],[ri_violations])
+        VALUES (
+          SYSUTCDATETIME(),
+          DATEDIFF_BIG(MILLISECOND, ?, SYSUTCDATETIME()),
+          (SELECT COUNT_BIG(*) FROM [gold].[FactSales]),
+          ?
+        );
+      </SqlStatement>
+      <ParameterBindings>
+        <ParameterBinding VariableName="User::v_StartUtc" DataType="DATE" Direction="INPUT" ParameterName="0" />
+        <ParameterBinding VariableName="User::v_RI_Violations" DataType="INT" Direction="INPUT" ParameterName="1" />
+      </ParameterBindings>
+    </ExecuteSQLTask>
+  </ControlFlow>
+</SSISPackage>
